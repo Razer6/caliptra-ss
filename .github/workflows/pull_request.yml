@@ -12,6 +12,8 @@ jobs:
   # Call auxiliary workflows
   pre_run:
     uses: ./.github/workflows/pre-run-check.yml
+  rom_patch:
+    uses: ./.github/workflows/rom-patch.yml
   doc_gen:
     uses: ./.github/workflows/doc-gen.yml
     if: ${{ (github.event_name == 'pull_request' && github.base_ref == 'main') || (github.event_name == 'push') }}

@@ -1,0 +1,201 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! Emit an `--add-cfg` hjson for caliptra-ss `gen_fuse_ctrl_vmem.py` that places
+//! a signed patch block into OTP partition items.
+//!
+//! The fuse generator stores each item `value` little-endian: byte `k` of the
+//! item = `(int(value,16) >> 8k) & 0xFF` (caliptra-ss `lib/otp_mem_img.py`).
+//! So to land block byte `k` at OTP item-offset `k`, the item's `value` is the
+//! **little-endian integer of the chunk** — i.e. the chunk written byte-reversed
+//! as a hex string. This module does that reversal so the round-trip is faithful
+//! and the byte-order footgun never reaches a human. See `docs/OTP_CONTRACT.md`.
+
+use std::fmt::Write;
+
+/// Target OTP layout for placing the block.
+#[derive(Debug, Clone)]
+pub struct FuseLayout {
+    /// OTP partition name.
+    pub partition: String,
+    /// Item name prefix; items are `{prefix}{first_index + n}`.
+    pub item_prefix: String,
+    /// Item size in bytes (the block is chunked into this; last chunk zero-padded).
+    pub item_size: usize,
+    /// Index of the first item the block occupies.
+    pub first_index: usize,
+    /// Whether to request the partition be locked (sets the SW digest).
+    pub lock: bool,
+}
+
+impl Default for FuseLayout {
+    /// Defaults to the current caliptra-ss `VENDOR_NON_SECRET_PROD_PARTITION`
+    /// 32-byte item layout, unlocked (so later patch slots can still be burned).
+    fn default() -> Self {
+        Self {
+            partition: "VENDOR_NON_SECRET_PROD_PARTITION".to_string(),
+            item_prefix: "CPTRA_SS_VENDOR_SPECIFIC_NON_SECRET_FUSE_".to_string(),
+            item_size: 32,
+            first_index: 0,
+            lock: false,
+        }
+    }
+}
+
+/// Encodes one item's `value`: the little-endian integer of `chunk`, as a hex
+/// string (chunk bytes reversed). `chunk.len()` must equal the item size.
+fn item_value_hex(chunk: &[u8]) -> String {
+    let mut hex = String::with_capacity(chunk.len() * 2 + 2);
+    hex.push_str("0x");
+    for b in chunk.iter().rev() {
+        write!(hex, "{b:02x}").unwrap();
+    }
+    hex
+}
+
+/// Number of `item_size`-byte items a `block_len`-byte block occupies.
+pub fn items_for(block_len: usize, item_size: usize) -> usize {
+    block_len.div_ceil(item_size).max(1)
+}
+
+/// Emits the item lines for one block placed starting at `first_index`.
+fn emit_block_items(
+    out: &mut String,
+    block: &[u8],
+    prefix: &str,
+    item_size: usize,
+    first_index: usize,
+) {
+    let n_items = items_for(block.len(), item_size);
+    for i in 0..n_items {
+        let start = i * item_size;
+        let end = (start + item_size).min(block.len());
+        let mut chunk = vec![0u8; item_size];
+        chunk[..end - start].copy_from_slice(&block[start..end]);
+
+        let name = format!("{}{}", prefix, first_index + i);
+        let value = item_value_hex(&chunk);
+        writeln!(
+            out,
+            "                {{ name: \"{name}\", value: \"{value}\" }},"
+        )
+        .unwrap();
+    }
+}
+
+/// Renders the `--add-cfg` hjson placing `block` into the partition's items.
+///
+/// The block is chunked into `item_size` pieces in ascending OTP-address order;
+/// the final chunk is zero-padded to a full item (those pad bytes lie beyond the
+/// block and are not part of the signed payload).
+pub fn emit_add_cfg(block: &[u8], layout: &FuseLayout) -> String {
+    emit_add_cfg_multi(
+        &layout.partition,
+        &layout.item_prefix,
+        layout.item_size,
+        layout.lock,
+        &[(layout.first_index, block)],
+    )
+}
+
+/// Renders one `--add-cfg` hjson placing multiple blocks at their item indices.
+///
+/// `blocks` is a list of `(first_index, block_bytes)`; each block is chunked as
+/// in [`emit_add_cfg`]. Items are emitted in ascending index order. Callers are
+/// responsible for ensuring the blocks' item ranges do not overlap (see
+/// `manifest::validate_placements`).
+pub fn emit_add_cfg_multi(
+    partition: &str,
+    item_prefix: &str,
+    item_size: usize,
+    lock: bool,
+    blocks: &[(usize, &[u8])],
+) -> String {
+    assert!(item_size > 0, "item_size must be non-zero");
+    let mut ordered: Vec<&(usize, &[u8])> = blocks.iter().collect();
+    ordered.sort_by_key(|(idx, _)| *idx);
+
+    let mut items = String::new();
+    for (first_index, block) in ordered {
+        emit_block_items(&mut items, block, item_prefix, item_size, *first_index);
+    }
+
+    format!(
+        "// Generated by caliptra-rom-patch.\n\
+         // Feed to caliptra-ss gen_fuse_ctrl_vmem.py via --add-cfg.\n\
+         {{\n    partitions: [\n        {{\n            name: \"{}\",\n            lock: \"{}\",\n            items: [\n{}            ]\n        }}\n    ]\n}}\n",
+        partition,
+        if lock { "True" } else { "False" },
+        items,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Mirror of caliptra-ss `data_bytes[k] = (value >> 8k) & 0xFF`: reconstruct
+    /// the OTP bytes a given `value` hex string would produce for `size` bytes.
+    fn otp_bytes_from_value(value_hex: &str, size: usize) -> Vec<u8> {
+        let v = u128::from_str_radix(value_hex.trim_start_matches("0x"), 16).unwrap();
+        (0..size).map(|k| ((v >> (8 * k)) & 0xFF) as u8).collect()
+    }
+
+    #[test]
+    fn item_value_round_trips_little_endian() {
+        let chunk: Vec<u8> = (0..8).collect(); // 0,1,..7
+        let hex = item_value_hex(&chunk);
+        assert_eq!(hex, "0x0706050403020100"); // byte-reversed
+        assert_eq!(otp_bytes_from_value(&hex, 8), chunk); // OTP byte k == chunk[k]
+    }
+
+    #[test]
+    fn block_lands_verbatim_across_items() {
+        // 40-byte block, 16-byte items -> 3 items (last zero-padded to 16).
+        let block: Vec<u8> = (0..40u8).collect();
+        let layout = FuseLayout {
+            partition: "P".into(),
+            item_prefix: "ITEM_".into(),
+            item_size: 16,
+            first_index: 0,
+            lock: false,
+        };
+        let cfg = emit_add_cfg(&block, &layout);
+
+        // Pull the value strings in order and reconstruct the OTP byte stream.
+        let values: Vec<&str> = cfg
+            .lines()
+            .filter_map(|l| l.split("value: \"").nth(1))
+            .map(|s| s.split('"').next().unwrap())
+            .collect();
+        assert_eq!(values.len(), 3);
+        let mut otp = Vec::new();
+        for v in values {
+            otp.extend(otp_bytes_from_value(v, 16));
+        }
+        // First 40 bytes equal the block; remainder is zero pad.
+        assert_eq!(&otp[..40], &block[..]);
+        assert!(otp[40..].iter().all(|&b| b == 0));
+        assert!(cfg.contains("name: \"ITEM_0\""));
+        assert!(cfg.contains("name: \"ITEM_2\""));
+    }
+
+    #[test]
+    fn default_layout_matches_caliptra_ss() {
+        let l = FuseLayout::default();
+        assert_eq!(l.partition, "VENDOR_NON_SECRET_PROD_PARTITION");
+        assert_eq!(l.item_size, 32);
+        assert!(!l.lock);
+    }
+}

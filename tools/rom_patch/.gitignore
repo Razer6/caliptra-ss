@@ -1,0 +1,7 @@
+# ---- Rust / Cargo ----
+# Also holds the e2e scratch dir (target/e2e): keeping every generated artifact
+# under target/ keeps the repo license-header check, which greps the working
+# tree rather than the index, from tripping over ELFs and keys.
+/target/
+**/*.rs.bk
+# Keep Cargo.lock: this crate ships a binary, so a pinned lockfile is wanted.

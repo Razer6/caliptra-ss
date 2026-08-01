@@ -22,6 +22,9 @@ if [[ -z "${CALIPTRA_SS_ROOT:+"empty"}" ]]; then
 fi
 
 # Create file list
+# tools/rom_patch/target is the (gitignored) cargo build directory of the ROM
+# patch packer; excluded so a locally-built tree stamps the same hash as a
+# clean checkout.
 find "$CALIPTRA_SS_ROOT" -type f \( -name "*.sv" \
                                  -o -name "*.svh" \
                                  -o -name "*.rdl" \
@@ -41,6 +44,7 @@ find "$CALIPTRA_SS_ROOT" -type f \( -name "*.sv" \
                                  -o -name "*.py" \
                                  -o -name "pr_timestamp" \) \
                                  ! -path "*.github/workflows/*" \
+                                 ! -path "*/tools/rom_patch/target/*" \
                                  ! -path "*.git/*" | LC_COLLATE=C sort -o $CALIPTRA_SS_ROOT/.github/workflow_metadata/file_list.txt
 sed -i "s,^$CALIPTRA_SS_ROOT/,," $CALIPTRA_SS_ROOT/.github/workflow_metadata/file_list.txt
 echo "Found $(wc -l $CALIPTRA_SS_ROOT/.github/workflow_metadata/file_list.txt) source code files to hash"

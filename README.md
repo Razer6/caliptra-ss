@@ -122,7 +122,8 @@ Required for Firmware (i.e. Test suites) makefile:<BR>
 │   ├── CaliptraSSIntegrationSpecification.md
 │   ├── CaliptraSSReleaseChecklist.md
 │   ├── coverage_reports
-│   └── images
+│   ├── images
+│   └── rom_patching
 ├── LICENSE
 ├── README.md
 ├── Release_Notes.md
@@ -147,6 +148,7 @@ Required for Firmware (i.e. Test suites) makefile:<BR>
 │   ├── cocotbext-i3c
 │   └── i3c-core
 └── tools
+    ├── rom_patch
     └── scripts
 ```
 

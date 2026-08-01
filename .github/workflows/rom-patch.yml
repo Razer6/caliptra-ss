@@ -1,0 +1,72 @@
+# docs: https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions
+
+# Builds and tests the MCU ROM patch packer (tools/rom_patch), the host tool
+# that produces signed RFC-0001 patch blocks and the matching
+# gen_fuse_ctrl_vmem.py --add-cfg fragment.
+name: ROM Patch Tool
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+defaults:
+  run:
+    working-directory: tools/rom_patch
+
+jobs:
+  build_test:
+    name: Build and Unit Test
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout RTL repo
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal \
+              --component rustfmt --component clippy
+          rustup default stable
+          cargo --version
+          rustc --version
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Unit tests
+        run: cargo test --locked
+
+      - name: Release build
+        run: cargo build --release --locked
+
+  e2e:
+    name: End-to-End Round Trip
+    runs-on: ubuntu-22.04
+    needs: [build_test]
+
+    steps:
+      - name: Checkout RTL repo
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Install bare-metal RISC-V toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-riscv64-unknown-elf
+
+      # Packs and signs a patch block, checks the RFC-0001 block layout,
+      # reconstructs the block from the --add-cfg hjson using the caliptra-ss
+      # item encoding rule, independently verifies the Ed25519 signature with
+      # OpenSSL, and asserts the negative cases (CSR write, out-of-ROM target,
+      # overlapping OTP slots) are rejected.
+      - name: Run e2e
+        run: |
+          cargo build --locked
+          ./e2e/run.sh

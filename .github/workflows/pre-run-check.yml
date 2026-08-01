@@ -39,6 +39,10 @@ jobs:
             # The list of paths will all have a ./ prefix that we don't want. Pipe it through "cut
             # -c 3-" (start at the third character of each line).
             #
+            # tools/rom_patch/target is the cargo build directory of the ROM patch packer. It is
+            # gitignored, but it holds hundreds of .json fingerprints, so it must be excluded or a
+            # locally-built tree would stamp a different hash than a clean checkout.
+            #
             # Finally, the paths will be in an unconstrained order (probably based on inode number).
             # Sort them alphabetically, setting LC_COLLATE=C to ensure this isn't affected by any
             # environment settings.
@@ -66,6 +70,7 @@ jobs:
                    -o -name "pr_timestamp"           \
                  \)                                  \
                  ! -path "*.github/workflows/*"      \
+                 ! -path "*/tools/rom_patch/target/*" \
                  ! -path "*.git/*" |                 \
                 cut -c 3- |                          \
                 LC_COLLATE=C sort -o $file_list
